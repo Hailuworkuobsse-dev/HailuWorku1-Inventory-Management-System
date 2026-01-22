@@ -1,0 +1,530 @@
+// This is your Prisma schema file
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// ENUMS
+// ============================================
+
+enum Role {
+  ADMIN
+  PROJECT_MANAGER
+  SITE_ENGINEER
+  INVENTORY_MANAGER
+  STORE_KEEPER
+  PROCUREMENT_OFFICER
+}
+
+enum MaterialStatus {
+  ACTIVE
+  PENDING_ACTIVATION
+  DISCONTINUED
+}
+
+enum StockCondition {
+  NEW
+  GOOD
+  DAMAGED
+  EXPIRED
+}
+
+enum TransactionType {
+  INBOUND
+  OUTBOUND
+  TRANSFER
+  ADJUSTMENT
+}
+
+enum ApprovalStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum ReconStatus {
+  OPEN
+  COUNTED
+  ADJUSTED
+  COMPLETED
+}
+
+enum LocationType {
+  WAREHOUSE
+  SITE
+  YARD
+}
+
+enum WebhookEvent {
+  PO_CREATED
+  PO_APPROVED
+  STOCK_LOW
+  MATERIAL_EXPIRED
+}
+
+// ============================================
+// USER MANAGEMENT
+// ============================================
+
+model User {
+  id                  String    @id @default(uuid())
+  name                String
+  email               String    @unique
+  password            String
+  role                Role      @default(SITE_ENGINEER)
+  isActive            Boolean   @default(true)
+  onboardingComplete  Boolean   @default(false)
+  tokenVersion        Int       @default(0)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  // Relations
+  createdPOs          PurchaseOrder[] @relation("CreatedPOs")
+  approvedPOs         PurchaseOrder[] @relation("ApprovedPOs")
+  requestedIssues     MaterialIssue[] @relation("RequestedIssues")
+  auditLogs           AuditLog[]
+  userLogs            UserLog[]
+  notifications       Notification[]
+  returnedItems       ReturnRecord[] @relation("ReturnedBy")
+  approvedReturns     ReturnRecord[] @relation("ApprovedReturns")
+  reconciliations     Reconciliation[]
+  integrationConfigs  IntegrationConfig[]
+
+  @@map("users")
+}
+
+model UserLog {
+  id        String   @id @default(uuid())
+  userId    String
+  action    String
+  timestamp DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_logs")
+}
+
+// ============================================
+// MATERIAL MASTER
+// ============================================
+
+model Material {
+  id                    String          @id @default(uuid())
+  code                  String          @unique
+  name                  String
+  category              String
+  description           String?
+  unit                  String
+  minStock              Float           @default(0)
+  maxStock              Float           @default(0)
+  reorderPoint          Float           @default(0)
+  safetyStock           Float           @default(0)
+  standardCost          Float           @default(0)
+  version               Int             @default(1)
+  status                MaterialStatus  @default(PENDING_ACTIVATION)
+  requiresCalibration   Boolean         @default(false)
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  // Relations
+  stocks                Stock[]
+  poItems               PurchaseOrderItem[]
+  boqItems              BOQItem[]
+  issueItems            IssueItem[]
+  reconItems            ReconItem[]
+
+  @@map("materials")
+}
+
+// ============================================
+// SUPPLIER MANAGEMENT
+// ============================================
+
+model Supplier {
+  id                String   @id @default(uuid())
+  name              String
+  contactPerson     String?
+  email             String?
+  phone             String?
+  address           String?
+  taxId             String?
+  performanceScore  Float    @default(0)
+  isBlacklisted     Boolean  @default(false)
+  tags              String[]
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  purchaseOrders    PurchaseOrder[]
+
+  @@map("suppliers")
+}
+
+// ============================================
+// LOCATION & STOCK
+// ============================================
+
+model Location {
+  id          String        @id @default(uuid())
+  name        String
+  type        LocationType
+  address     String?
+  capacity    Float?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  // Relations
+  stocks          Stock[]
+  reconciliations Reconciliation[]
+
+  @@map("locations")
+}
+
+model Stock {
+  id            String         @id @default(uuid())
+  materialId    String
+  locationId    String
+  batchNumber   String
+  quantity      Float
+  condition     StockCondition @default(NEW)
+  receivedDate  DateTime       @default(now())
+  expiryDate    DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  material      Material       @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  location      Location       @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@unique([materialId, locationId, batchNumber])
+  @@map("stocks")
+}
+
+model Transaction {
+  id              String          @id @default(uuid())
+  type            TransactionType
+  materialId      String
+  fromLocationId  String?
+  toLocationId    String?
+  quantity        Float
+  reference       String?
+  notes           String?
+  performedBy     String?
+  timestamp       DateTime        @default(now())
+
+  @@map("transactions")
+}
+
+// ============================================
+// PROCUREMENT
+// ============================================
+
+model PurchaseOrder {
+  id          String          @id @default(uuid())
+  poNumber    String          @unique
+  supplierId  String
+  projectId   String?
+  totalAmount Float
+  status      ApprovalStatus  @default(PENDING_APPROVAL)
+  notes       String?
+  createdById String
+  approvedById String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  supplier    Supplier             @relation(fields: [supplierId], references: [id])
+  project     Project?             @relation(fields: [projectId], references: [id])
+  createdBy   User                 @relation("CreatedPOs", fields: [createdById], references: [id])
+  approvedBy  User?                @relation("ApprovedPOs", fields: [approvedById], references: [id])
+  items       PurchaseOrderItem[]
+  grns        GRN[]
+
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderItem {
+  id          String   @id @default(uuid())
+  poId        String
+  materialId  String
+  quantity    Float
+  unitPrice   Float
+  receivedQty Float    @default(0)
+  createdAt   DateTime @default(now())
+
+  po          PurchaseOrder @relation(fields: [poId], references: [id], onDelete: Cascade)
+  material    Material      @relation(fields: [materialId], references: [id])
+  grnItems    GRNItem[]
+
+  @@map("purchase_order_items")
+}
+
+model GRN {
+  id                String   @id @default(uuid())
+  purchaseOrderId   String
+  evidenceUrl       String?
+  createdAt         DateTime @default(now())
+
+  purchaseOrder     PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
+  items             GRNItem[]
+
+  @@map("grns")
+}
+
+model GRNItem {
+  id            String    @id @default(uuid())
+  grnId         String
+  poItemId      String
+  quantity      Float
+  acceptedQty   Float
+  rejectedQty   Float     @default(0)
+  batchNumber   String
+  expiryDate    DateTime?
+  createdAt     DateTime  @default(now())
+
+  grn           GRN               @relation(fields: [grnId], references: [id], onDelete: Cascade)
+  poItem        PurchaseOrderItem @relation(fields: [poItemId], references: [id])
+
+  @@map("grn_items")
+}
+
+// ============================================
+// PROJECT & BOQ
+// ============================================
+
+model Project {
+  id          String   @id @default(uuid())
+  name        String
+  startDate   DateTime
+  endDate     DateTime?
+  status      String   @default("PLANNING")
+  budget      Float    @default(0)
+  spent       Float    @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  purchaseOrders PurchaseOrder[]
+  boqItems       BOQItem[]
+  materialIssues MaterialIssue[]
+  workActivities WorkActivity[]
+
+  @@map("projects")
+}
+
+model BOQItem {
+  id          String   @id @default(uuid())
+  projectId   String
+  materialId  String
+  plannedQty  Float
+  consumedQty Float    @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  material    Material @relation(fields: [materialId], references: [id])
+
+  @@map("boq_items")
+}
+
+// ============================================
+// MATERIAL ISSUES
+// ============================================
+
+model MaterialIssue {
+  id              String          @id @default(uuid())
+  projectId       String
+  workActivityId  String?
+  requestedBy     String
+  isEmergency     Boolean         @default(false)
+  justification   String?
+  status          ApprovalStatus  @default(PENDING_APPROVAL)
+  locationId      String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  project         Project         @relation(fields: [projectId], references: [id])
+  workActivity    WorkActivity?   @relation(fields: [workActivityId], references: [id])
+  requester       User            @relation("RequestedIssues", fields: [requestedBy], references: [id])
+  items           IssueItem[]
+  returns         ReturnRecord[]
+
+  @@map("material_issues")
+}
+
+model IssueItem {
+  id            String    @id @default(uuid())
+  issueId       String
+  materialId    String
+  requestedQty  Float
+  issuedQty     Float?
+  createdAt     DateTime  @default(now())
+
+  issue         MaterialIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  material      Material      @relation(fields: [materialId], references: [id])
+
+  @@map("issue_items")
+}
+
+// ============================================
+// RETURNS & RECONCILIATION
+// ============================================
+
+model ReturnRecord {
+  id          String          @id @default(uuid())
+  issueId     String
+  materialId  String
+  quantity    Float
+  reason      String
+  condition   StockCondition
+  returnedBy  String
+  approvedBy  String?
+  status      ApprovalStatus  @default(PENDING_APPROVAL)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  issue       MaterialIssue   @relation(fields: [issueId], references: [id])
+  returner    User            @relation("ReturnedBy", fields: [returnedBy], references: [id])
+  approver    User?           @relation("ApprovedReturns", fields: [approvedBy], references: [id])
+
+  @@map("return_records")
+}
+
+model Reconciliation {
+  id            String      @id @default(uuid())
+  locationId    String
+  conductedBy   String
+  status        ReconStatus @default(OPEN)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  location      Location    @relation(fields: [locationId], references: [id])
+  conductor     User        @relation(fields: [conductedBy], references: [id])
+  items         ReconItem[]
+
+  @@map("reconciliations")
+}
+
+model ReconItem {
+  id            String          @id @default(uuid())
+  reconId       String
+  materialId    String
+  batchNumber   String
+  systemQty     Float
+  physicalQty   Float?
+  variance      Float?
+  createdAt     DateTime        @default(now())
+
+  reconciliation Reconciliation @relation(fields: [reconId], references: [id], onDelete: Cascade)
+  material       Material       @relation(fields: [materialId], references: [id])
+
+  @@map("recon_items")
+}
+
+// ============================================
+// WORK ACTIVITIES
+// ============================================
+
+model WorkActivity {
+  id          String          @id @default(uuid())
+  projectId   String
+  name        String
+  costCode    String?
+  startDate   DateTime
+  endDate     DateTime?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  project     Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  issues      MaterialIssue[]
+
+  @@map("work_activities")
+}
+
+// ============================================
+// AUDIT & LOGS
+// ============================================
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  userId      String
+  entityType  String
+  entityId    String
+  action      String
+  oldValue    Json?
+  newValue    Json?
+  ipAddress   String?
+  timestamp   DateTime @default(now())
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("audit_logs")
+}
+
+// ============================================
+// NOTIFICATIONS
+// ============================================
+
+model Notification {
+  id          String   @id @default(uuid())
+  userId      String
+  type        String
+  message     String
+  isRead      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+// ============================================
+// INTEGRATIONS
+// ============================================
+
+model WebhookConfig {
+  id        String        @id @default(uuid())
+  event     WebhookEvent
+  url       String
+  secret    String
+  isActive  Boolean       @default(true)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@map("webhook_configs")
+}
+
+model IntegrationConfig {
+  id               String   @id @default(uuid())
+  integrationName  String   @unique
+  configData       Json
+  createdBy        String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  creator          User     @relation(fields: [createdBy], references: [id])
+
+  @@map("integration_configs")
+}
+
+// ============================================
+// SYSTEM CONFIGURATION
+// ============================================
+
+model SystemConfig {
+  id            String   @id @default("global")
+  companyName   String   @default("Construction Co.")
+  baseCurrency  String   @default("ETB")
+  dateFormat    String   @default("YYYY-MM-DD")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("system_configs")
+}
